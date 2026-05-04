@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 using AOUU.Services;
 
@@ -59,7 +61,7 @@ public sealed class KeyCaptureDialog : Form
             Top = 40,
             Width = 356,
             Height = 38,
-            Text = "先点“开始录制”，再按一次目标键。\r\n支持键盘、鼠标侧键和常见 XInput 手柄按钮。",
+            Text = "先点“开始录制”，再按下目标组合键。\r\n支持键盘和常见 XInput 手柄按钮组合，鼠标输入会被忽略。",
             TextAlign = ContentAlignment.MiddleCenter
         };
 
@@ -156,7 +158,7 @@ public sealed class KeyCaptureDialog : Form
         FormClosed += KeyCaptureDialog_FormClosed;
     }
 
-    public int? CapturedKeyCode { get; private set; }
+    public List<int> CapturedKeyCodes { get; private set; } = [];
 
     public string? CapturedKeyName { get; private set; }
 
@@ -167,10 +169,10 @@ public sealed class KeyCaptureDialog : Form
 
     private void StartCaptureButton_Click(object? sender, EventArgs e)
     {
-        CapturedKeyCode = null;
+        CapturedKeyCodes = [];
         CapturedKeyName = null;
         _resultLabel.Text = "识别结果：等待识别";
-        _statusLabel.Text = "正在准备监听，请稍后按下目标键...";
+        _statusLabel.Text = "正在准备监听，请稍后按下目标组合键...";
         _confirmButton.Enabled = false;
         _retryButton.Enabled = false;
         _startCaptureButton.Enabled = false;
@@ -190,57 +192,56 @@ public sealed class KeyCaptureDialog : Form
         }
 
         _state = CaptureState.Armed;
-        _statusLabel.Text = "正在监听，直接按一次想设置的快捷键。";
+        _statusLabel.Text = "正在监听，请同时按下想设置的快捷键组合。";
     }
 
     private void InputCaptureService_InputPressed(int keyCode)
     {
-        if (!IsHandleCreated)
+        if (!IsHandleCreated || IsMouseInput(keyCode))
         {
             return;
         }
 
-        BeginInvoke(new Action(() => TryCaptureInput(keyCode)));
+        BeginInvoke(new Action(UpdateCapturedHotkeyPreview));
     }
 
-    private void TryCaptureInput(int keyCode)
+    private void UpdateCapturedHotkeyPreview()
     {
         if (_state != CaptureState.Armed)
         {
             return;
         }
 
-        if (keyCode == 0x01)
+        var recordableKeys = TriggerMonitorService.GetPressedKeys()
+            .Where(IsRecordableInput)
+            .ToList();
+        if (recordableKeys.Count == 0)
         {
-            _statusLabel.Text = "不允许设置为鼠标左键，请换一个键。";
             return;
         }
 
-        if (keyCode == 0x02)
-        {
-            _statusLabel.Text = "不建议设置为鼠标右键，请换一个键。";
-            return;
-        }
-
-        if (!TriggerMonitorService.IsSupportedHotkey(keyCode))
-        {
-            _statusLabel.Text = "这个输入不适合作为快捷键，请换成键盘键、鼠标侧键或手柄按钮。";
-            return;
-        }
-
-        CapturedKeyCode = keyCode;
-        CapturedKeyName = TriggerMonitorService.GetKeyName(keyCode);
+        CapturedKeyCodes = recordableKeys;
+        CapturedKeyName = TriggerMonitorService.GetHotkeyName(recordableKeys);
         _resultLabel.Text = $"识别结果：{CapturedKeyName}";
-        _statusLabel.Text = "识别成功，点击“确认”后才会保存。";
+        _statusLabel.Text = "按下新的组合会重新采样并替换结果，点击“确认”后保存。";
         _confirmButton.Enabled = true;
         _retryButton.Enabled = true;
         _startCaptureButton.Enabled = true;
-        _state = CaptureState.Captured;
+    }
+
+    private static bool IsMouseInput(int keyCode)
+    {
+        return keyCode is 0x01 or 0x02 or 0x04 or 0x05 or 0x06;
+    }
+
+    private static bool IsRecordableInput(int keyCode)
+    {
+        return !IsMouseInput(keyCode) && TriggerMonitorService.IsSupportedHotkey(keyCode);
     }
 
     private void ConfirmButton_Click(object? sender, EventArgs e)
     {
-        if (!CapturedKeyCode.HasValue)
+        if (CapturedKeyCodes.Count == 0)
         {
             return;
         }
@@ -269,7 +270,6 @@ public sealed class KeyCaptureDialog : Form
     {
         Idle,
         Arming,
-        Armed,
-        Captured
+        Armed
     }
 }

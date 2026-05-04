@@ -21,6 +21,7 @@ public sealed class RecognitionSession
     private readonly int _watchWindowMs;
     private readonly int _pollIntervalMs;
     private readonly int _healthGrowthPixelThreshold;
+    private readonly bool _detectHealthChange;
 
     public RecognitionSession(
         ScreenCaptureService screenCaptureService,
@@ -32,7 +33,8 @@ public sealed class RecognitionSession
         string debugRootPath,
         int watchWindowMs,
         int pollIntervalMs,
-        int healthGrowthPixelThreshold)
+        int healthGrowthPixelThreshold,
+        bool detectHealthChange)
     {
         _screenCaptureService = screenCaptureService;
         _templateMatcher = templateMatcher;
@@ -44,6 +46,7 @@ public sealed class RecognitionSession
         _watchWindowMs = watchWindowMs;
         _pollIntervalMs = pollIntervalMs;
         _healthGrowthPixelThreshold = healthGrowthPixelThreshold;
+        _detectHealthChange = detectHealthChange;
     }
 
     public async Task<RecognitionResult> RunAsync(IEnumerable<WatchRegion> regions, CancellationToken cancellationToken)
@@ -55,19 +58,23 @@ public sealed class RecognitionSession
         debug.WriteMetric("WatchWindowMs", _watchWindowMs);
         debug.WriteMetric("PollIntervalMs", _pollIntervalMs);
         debug.WriteMetric("HealthGrowthPixelThreshold", _healthGrowthPixelThreshold);
+        debug.WriteMetric("DetectHealthChange", _detectHealthChange);
 
         if (skillRegion is null)
         {
             return Finish(debug, false, null, "未配置技能区域。");
         }
 
-        if (healthRegion is null)
+        if (_detectHealthChange && healthRegion is null)
         {
             return Finish(debug, false, null, "未配置血条区域。");
         }
 
         debug.WriteLine($"SkillRegion={skillRegion.Bounds}");
-        debug.WriteLine($"HealthRegion={healthRegion.Bounds}");
+        if (healthRegion is not null)
+        {
+            debug.WriteLine($"HealthRegion={healthRegion.Bounds}");
+        }
 
         try
         {
@@ -98,6 +105,16 @@ public sealed class RecognitionSession
             if (!skillAnalysis.IsReady)
             {
                 return Finish(debug, false, skillRegion.Name, "触发时技能未判定为就绪状态，本次不播放提示音。");
+            }
+
+            if (!_detectHealthChange)
+            {
+                return Finish(debug, true, skillRegion.Name, "技能已就绪，当前未检测血条变化，默认放行。");
+            }
+
+            if (healthRegion is null)
+            {
+                return Finish(debug, false, null, "未配置血条区域。");
             }
 
             var exactHealthBounds = ResolveExactHealthBounds(healthRegion, debug);

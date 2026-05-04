@@ -41,6 +41,7 @@ public partial class AOUU : Form
     private readonly NumericUpDown _watchWindowBox;
     private readonly NumericUpDown _pollIntervalBox;
     private readonly NumericUpDown _healthConsecutiveFramesBox;
+    private readonly CheckBox _detectHealthChangeCheckBox;
     private readonly TrackBar _healthThresholdBar;
     private readonly Label _healthThresholdValueLabel;
     private readonly TrackBar _audioVolumeBar;
@@ -194,6 +195,16 @@ public partial class AOUU : Form
         };
         _healthConsecutiveFramesBox.ValueChanged += HealthConsecutiveFramesBox_ValueChanged;
 
+        _detectHealthChangeCheckBox = new CheckBox
+        {
+            Left = 620,
+            Top = 184,
+            Width = 180,
+            Text = "是否检测血条变化",
+            Checked = true
+        };
+        _detectHealthChangeCheckBox.CheckedChanged += DetectHealthChangeCheckBox_CheckedChanged;
+
         _healthThresholdBar = new TrackBar
         {
             Left = 24,
@@ -320,6 +331,7 @@ public partial class AOUU : Form
         Controls.Add(_setSkillRegionButton);
         Controls.Add(_setHealthRegionButton);
         Controls.Add(_removeRegionButton);
+        Controls.Add(_detectHealthChangeCheckBox);
         Controls.Add(new Label
         {
             Left = 24,
@@ -351,7 +363,7 @@ public partial class AOUU : Form
             Left = 24,
             Top = 550,
             Width = 860,
-            Text = "点击配置键位后会弹出识别框，只有确认后的结果才会保存，支持键盘、鼠标侧键和手柄按钮，鼠标左键不会被接受。"
+            Text = "点击配置键位后会弹出识别框，只有确认后的结果才会保存，支持键盘和手柄按钮组合，录制时会忽略鼠标输入。"
         });
         Controls.Add(_statusLabel);
 
@@ -470,12 +482,12 @@ public partial class AOUU : Form
         using var dialog = new KeyCaptureDialog(title, currentKeyName, _inputCaptureService);
         var result = dialog.ShowDialog(this);
 
-        if (result == DialogResult.OK && dialog.CapturedKeyCode.HasValue)
+        if (result == DialogResult.OK && dialog.CapturedKeyCodes.Count > 0)
         {
             ApplyCapturedHotkey(
                 target,
-                dialog.CapturedKeyCode.Value,
-                dialog.CapturedKeyName ?? TriggerMonitorService.GetKeyName(dialog.CapturedKeyCode.Value));
+                dialog.CapturedKeyCodes,
+                dialog.CapturedKeyName ?? TriggerMonitorService.GetHotkeyName(dialog.CapturedKeyCodes));
             SetStatus($"{title}已设置为：{dialog.CapturedKeyName}");
         }
         else
@@ -496,22 +508,31 @@ public partial class AOUU : Form
         _preparedKeyConfigurationTarget = target;
         _triggerMonitorService.Enabled = false;
         _regionCaptureMonitorService.Enabled = false;
-        SetStatus("按键识别框已打开。先松开鼠标，再在识别框内按下新的键位。");
+        SetStatus("按键识别框已打开。按下新的键盘或手柄组合键，鼠标输入会被忽略。");
     }
 
-    private void ApplyCapturedHotkey(KeyConfigurationTarget target, int keyCode, string keyName)
+    private void ApplyCapturedHotkey(KeyConfigurationTarget target, List<int> keyCodes, string keyName)
     {
+        var normalizedKeyCodes = keyCodes
+            .Where(keyCode => keyCode > 0)
+            .Distinct()
+            .ToList();
+
         if (target == KeyConfigurationTarget.Trigger)
         {
-            _config.TriggerKey = keyCode;
+            _config.TriggerKeys = normalizedKeyCodes;
+            _config.TriggerKey = normalizedKeyCodes[0];
             _config.TriggerKeyName = keyName;
-            _triggerMonitorService.TriggerKey = keyCode;
+            _triggerMonitorService.TriggerKeys = normalizedKeyCodes;
+            _triggerMonitorService.TriggerKey = normalizedKeyCodes[0];
         }
         else if (target == KeyConfigurationTarget.RegionCapture)
         {
-            _config.RegionCaptureKey = keyCode;
+            _config.RegionCaptureKeys = normalizedKeyCodes;
+            _config.RegionCaptureKey = normalizedKeyCodes[0];
             _config.RegionCaptureKeyName = keyName;
-            _regionCaptureMonitorService.TriggerKey = keyCode;
+            _regionCaptureMonitorService.TriggerKeys = normalizedKeyCodes;
+            _regionCaptureMonitorService.TriggerKey = normalizedKeyCodes[0];
         }
 
         SaveConfig();
@@ -553,6 +574,18 @@ public partial class AOUU : Form
         UpdateStatus();
     }
 
+    private void DetectHealthChangeCheckBox_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_isApplyingConfigToUi)
+        {
+            return;
+        }
+
+        _config.DetectHealthChange = _detectHealthChangeCheckBox.Checked;
+        SaveConfig();
+        UpdateStatus();
+    }
+
     private void AudioVolumeBar_ValueChanged(object? sender, EventArgs e)
     {
         if (_isApplyingConfigToUi)
@@ -576,7 +609,7 @@ public partial class AOUU : Form
 
         if (!HasRequiredRegions())
         {
-            SetStatus("需要同时配置技能区域和血条区域。");
+            SetStatus(_config.DetectHealthChange ? "需要同时配置技能区域和血条区域。" : "需要配置技能区域。");
             return;
         }
 
@@ -587,7 +620,9 @@ public partial class AOUU : Form
         }
 
         _isRecognitionRunning = true;
-        SetStatus($"已触发监听，正在等待 {_config.WatchWindowMs} ms 内的血条变化。");
+        SetStatus(_config.DetectHealthChange
+            ? $"已触发监听，正在等待 {_config.WatchWindowMs} ms 内的血条变化。"
+            : "已触发监听，当前不检测血条变化，技能就绪后直接放行。");
 
         try
         {
@@ -602,7 +637,8 @@ public partial class AOUU : Form
                 _configService.RecognitionDebugDirectory,
                 _config.WatchWindowMs,
                 _config.PollIntervalMs,
-                _config.HealthGrowthPixelThreshold);
+                _config.HealthGrowthPixelThreshold,
+                _config.DetectHealthChange);
 
             var result = await session.RunAsync(regionsSnapshot, _shutdownCts.Token);
             if (result.Matched)
@@ -1016,7 +1052,7 @@ public partial class AOUU : Form
     private bool HasRequiredRegions()
     {
         return _config.Regions.OfType<SkillReadyWatchRegion>().Any() &&
-               _config.Regions.OfType<HealthChangeWatchRegion>().Any();
+               (!_config.DetectHealthChange || _config.Regions.OfType<HealthChangeWatchRegion>().Any());
     }
 
     private void LoadAudio()
@@ -1242,11 +1278,14 @@ public partial class AOUU : Form
             _pollIntervalBox.Value = Math.Clamp(_config.PollIntervalMs, (int)_pollIntervalBox.Minimum, (int)_pollIntervalBox.Maximum);
             _healthConsecutiveFramesBox.Value = Math.Clamp(_config.HealthConsecutiveFramesRequired, (int)_healthConsecutiveFramesBox.Minimum, (int)_healthConsecutiveFramesBox.Maximum);
             _healthThresholdBar.Value = Math.Clamp(_config.HealthGrowthPixelThreshold, _healthThresholdBar.Minimum, _healthThresholdBar.Maximum);
+            _detectHealthChangeCheckBox.Checked = _config.DetectHealthChange;
             _audioVolumeBar.Value = Math.Clamp((int)Math.Round(_config.AudioVolume * 100f), _audioVolumeBar.Minimum, _audioVolumeBar.Maximum);
             UpdateThresholdDisplay();
             UpdateVolumeDisplay();
             ApplyAudioVolume();
+            _triggerMonitorService.TriggerKeys = _config.TriggerKeys;
             _triggerMonitorService.TriggerKey = _config.TriggerKey;
+            _regionCaptureMonitorService.TriggerKeys = _config.RegionCaptureKeys;
             _regionCaptureMonitorService.TriggerKey = _config.RegionCaptureKey;
         }
         finally
@@ -1275,6 +1314,7 @@ public partial class AOUU : Form
         _config.HealthConsecutiveFramesRequired = (int)_healthConsecutiveFramesBox.Value;
         SyncHealthConsecutiveFramesToRegion();
         _config.HealthGrowthPixelThreshold = _healthThresholdBar.Value;
+        _config.DetectHealthChange = _detectHealthChangeCheckBox.Checked;
         _config.AudioVolume = _audioVolumeBar.Value / 100f;
         _configService.Save(_config);
     }
@@ -1294,8 +1334,9 @@ public partial class AOUU : Form
     {
         var audioState = HasPlayableAudio(_config.AudioPath) ? "已加载音频" : "未选择音频";
         var regionCount = _config.Regions.Count;
+        var healthDetectionState = _config.DetectHealthChange ? "检测血条变化" : "不检测血条变化，默认放行";
         _statusLabel.Text =
-            $"{audioState}。技能触发键：{_config.TriggerKeyName}。截图键：{_config.RegionCaptureKeyName}。检测区域数量：{regionCount}。";
+            $"{audioState}。技能触发键：{_config.TriggerKeyName}。截图键：{_config.RegionCaptureKeyName}。{healthDetectionState}。检测区域数量：{regionCount}。";
     }
 
     private void UpdateThresholdDisplay()

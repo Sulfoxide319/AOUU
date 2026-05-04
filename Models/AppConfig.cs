@@ -12,9 +12,13 @@ public sealed class AppConfig
 
     public float AudioVolume { get; set; } = 1.0f;
 
+    public List<int> TriggerKeys { get; set; } = [0x77];
+
     public int TriggerKey { get; set; } = 0x77;
 
     public string TriggerKeyName { get; set; } = "F8";
+
+    public List<int> RegionCaptureKeys { get; set; } = [0x79];
 
     public int RegionCaptureKey { get; set; } = 0x79;
 
@@ -29,6 +33,8 @@ public sealed class AppConfig
     public int HealthGrowthPixelThreshold { get; set; } = 1;
 
     public int HealthConsecutiveFramesRequired { get; set; } = 2;
+
+    public bool DetectHealthChange { get; set; } = true;
 
     public List<WatchRegion> Regions { get; set; } = [];
 }

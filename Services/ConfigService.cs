@@ -102,12 +102,13 @@ public sealed class ConfigService
         if (lines.Length >= 2 && int.TryParse(lines[1], out var savedKey))
         {
             legacyConfig.TriggerKey = savedKey;
+            legacyConfig.TriggerKeys = [savedKey];
         }
 
         legacyConfig.TriggerKeyName = lines.Length >= 3
             ? lines[2]
-            : TriggerMonitorService.GetKeyName(legacyConfig.TriggerKey);
-        legacyConfig.RegionCaptureKeyName = TriggerMonitorService.GetKeyName(legacyConfig.RegionCaptureKey);
+            : TriggerMonitorService.GetHotkeyName(legacyConfig.TriggerKeys);
+        legacyConfig.RegionCaptureKeyName = TriggerMonitorService.GetHotkeyName(legacyConfig.RegionCaptureKeys);
 
         Save(legacyConfig);
         return legacyConfig;
@@ -182,15 +183,18 @@ public sealed class ConfigService
         config.LeftClickAudioPath = dto.LeftClickAudioPath ?? string.Empty;
         config.RightClickAudioPath = dto.RightClickAudioPath ?? string.Empty;
         config.AudioVolume = Math.Clamp(dto.AudioVolume, 0.0f, 1.0f);
-        config.TriggerKey = TriggerMonitorService.IsSupportedHotkey(dto.TriggerKey) ? dto.TriggerKey : 0x77;
-        config.TriggerKeyName = TriggerMonitorService.GetKeyName(config.TriggerKey);
-        config.RegionCaptureKey = TriggerMonitorService.IsSupportedHotkey(dto.RegionCaptureKey) ? dto.RegionCaptureKey : 0x79;
-        config.RegionCaptureKeyName = TriggerMonitorService.GetKeyName(config.RegionCaptureKey);
+        config.TriggerKeys = ResolveHotkey(dto.TriggerKeys, dto.TriggerKey, 0x77);
+        config.TriggerKey = config.TriggerKeys[0];
+        config.TriggerKeyName = TriggerMonitorService.GetHotkeyName(config.TriggerKeys);
+        config.RegionCaptureKeys = ResolveHotkey(dto.RegionCaptureKeys, dto.RegionCaptureKey, 0x79);
+        config.RegionCaptureKey = config.RegionCaptureKeys[0];
+        config.RegionCaptureKeyName = TriggerMonitorService.GetHotkeyName(config.RegionCaptureKeys);
         config.HealthBaselineRefreshSeconds = Math.Clamp(dto.HealthBaselineRefreshSeconds, 5, 300);
         config.WatchWindowMs = Math.Clamp(dto.WatchWindowMs, 200, 10000);
         config.PollIntervalMs = Math.Clamp(dto.PollIntervalMs, 5, 1000);
         config.HealthGrowthPixelThreshold = Math.Clamp(dto.HealthGrowthPixelThreshold, 1, 20);
         config.HealthConsecutiveFramesRequired = Math.Clamp(dto.HealthConsecutiveFramesRequired <= 0 ? 2 : dto.HealthConsecutiveFramesRequired, 1, 20);
+        config.DetectHealthChange = dto.DetectHealthChange;
 
         if (!string.IsNullOrWhiteSpace(config.AudioPath) &&
             File.Exists(DefaultAudioPath) &&
@@ -297,15 +301,18 @@ public sealed class ConfigService
             LeftClickAudioPath = config.LeftClickAudioPath,
             RightClickAudioPath = config.RightClickAudioPath,
             AudioVolume = config.AudioVolume,
-            TriggerKey = config.TriggerKey,
+            TriggerKeys = NormalizeHotkey(config.TriggerKeys, config.TriggerKey),
+            TriggerKey = NormalizeHotkey(config.TriggerKeys, config.TriggerKey)[0],
             TriggerKeyName = config.TriggerKeyName,
-            RegionCaptureKey = config.RegionCaptureKey,
+            RegionCaptureKeys = NormalizeHotkey(config.RegionCaptureKeys, config.RegionCaptureKey),
+            RegionCaptureKey = NormalizeHotkey(config.RegionCaptureKeys, config.RegionCaptureKey)[0],
             RegionCaptureKeyName = config.RegionCaptureKeyName,
             HealthBaselineRefreshSeconds = config.HealthBaselineRefreshSeconds,
             WatchWindowMs = config.WatchWindowMs,
             PollIntervalMs = config.PollIntervalMs,
             HealthGrowthPixelThreshold = config.HealthGrowthPixelThreshold,
             HealthConsecutiveFramesRequired = config.HealthConsecutiveFramesRequired,
+            DetectHealthChange = config.DetectHealthChange,
             Regions = config.Regions.Select(region =>
             {
                 if (region is SkillReadyWatchRegion skillRegion)
@@ -339,6 +346,61 @@ public sealed class ConfigService
         };
     }
 
+    private static List<int> ResolveHotkey(List<int>? keyCodes, int legacyKeyCode, int fallbackKeyCode)
+    {
+        var normalizedKeys = NormalizeHotkey(keyCodes ?? [], legacyKeyCode);
+        if (TriggerMonitorService.IsSupportedHotkey(normalizedKeys))
+        {
+            return normalizedKeys;
+        }
+
+        if (TriggerMonitorService.IsSupportedHotkey(legacyKeyCode))
+        {
+            return [legacyKeyCode];
+        }
+
+        return [fallbackKeyCode];
+    }
+
+    private static List<int> NormalizeHotkey(IEnumerable<int> keyCodes, int fallbackKeyCode)
+    {
+        var normalizedKeys = keyCodes
+            .Select(NormalizeKeyCode)
+            .Where(keyCode => keyCode > 0)
+            .Distinct()
+            .OrderBy(GetHotkeySortOrder)
+            .ToList();
+
+        if (normalizedKeys.Count == 0 && fallbackKeyCode > 0)
+        {
+            normalizedKeys.Add(NormalizeKeyCode(fallbackKeyCode));
+        }
+
+        return normalizedKeys;
+    }
+
+    private static int NormalizeKeyCode(int keyCode)
+    {
+        return keyCode switch
+        {
+            0xA0 or 0xA1 => 0x10,
+            0xA2 or 0xA3 => 0x11,
+            0xA4 or 0xA5 => 0x12,
+            _ => keyCode
+        };
+    }
+
+    private static int GetHotkeySortOrder(int keyCode)
+    {
+        return keyCode switch
+        {
+            0x10 => 0,
+            0x11 => 1,
+            0x12 => 2,
+            _ => 100 + keyCode
+        };
+    }
+
     private sealed class AppConfigDto
     {
         public string? AudioPath { get; set; }
@@ -349,9 +411,13 @@ public sealed class ConfigService
 
         public float AudioVolume { get; set; } = 1.0f;
 
+        public List<int>? TriggerKeys { get; set; }
+
         public int TriggerKey { get; set; }
 
         public string? TriggerKeyName { get; set; }
+
+        public List<int>? RegionCaptureKeys { get; set; }
 
         public int RegionCaptureKey { get; set; }
 
@@ -366,6 +432,8 @@ public sealed class ConfigService
         public int HealthGrowthPixelThreshold { get; set; } = 1;
 
         public int HealthConsecutiveFramesRequired { get; set; } = 2;
+
+        public bool DetectHealthChange { get; set; } = true;
 
         public List<WatchRegionDto>? Regions { get; set; }
     }

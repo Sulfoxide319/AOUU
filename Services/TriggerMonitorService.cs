@@ -62,6 +62,8 @@ public sealed class TriggerMonitorService : IDisposable
 
     public int TriggerKey { get; set; } = 0x77;
 
+    public List<int> TriggerKeys { get; set; } = [0x77];
+
     public bool Enabled
     {
         get => _timer.Enabled;
@@ -147,6 +149,9 @@ public sealed class TriggerMonitorService : IDisposable
             0x10 => "Shift",
             0x11 => "Ctrl",
             0x12 => "Alt",
+            0xA0 or 0xA1 => "Shift",
+            0xA2 or 0xA3 => "Ctrl",
+            0xA4 or 0xA5 => "Alt",
             0x1B => "Esc",
             0x20 => "Space",
             0x25 => "方向键左",
@@ -158,6 +163,14 @@ public sealed class TriggerMonitorService : IDisposable
             >= 0x41 and <= 0x5A => ((char)keyCode).ToString(),
             _ => $"未知按键 {keyCode}"
         };
+    }
+
+    public static string GetHotkeyName(IEnumerable<int> keyCodes)
+    {
+        var normalizedKeys = NormalizeHotkey(keyCodes);
+        return normalizedKeys.Count == 0
+            ? "未设置"
+            : string.Join(" + ", normalizedKeys.Select(GetKeyName));
     }
 
     public static bool IsSupportedHotkey(int keyCode)
@@ -175,9 +188,16 @@ public sealed class TriggerMonitorService : IDisposable
         return !GetKeyName(keyCode).StartsWith("未知按键 ", StringComparison.Ordinal);
     }
 
+    public static bool IsSupportedHotkey(IEnumerable<int> keyCodes)
+    {
+        var normalizedKeys = NormalizeHotkey(keyCodes);
+        return normalizedKeys.Count > 0 && normalizedKeys.All(IsSupportedHotkey);
+    }
+
     private void Timer_Tick(object? sender, EventArgs e)
     {
-        var isPressed = IsHotkeyPressed(TriggerKey);
+        IReadOnlyList<int> configuredKeys = TriggerKeys.Count > 0 ? TriggerKeys : [TriggerKey];
+        var isPressed = IsHotkeyPressed(configuredKeys);
         if (isPressed && !_wasPressed)
         {
             Triggered?.Invoke(this, EventArgs.Empty);
@@ -213,6 +233,45 @@ public sealed class TriggerMonitorService : IDisposable
         }
 
         return (GetAsyncKeyState(keyCode) & 0x8000) != 0;
+    }
+
+    private static bool IsHotkeyPressed(IEnumerable<int> keyCodes)
+    {
+        var normalizedKeys = NormalizeHotkey(keyCodes);
+        return normalizedKeys.Count > 0 && normalizedKeys.All(IsHotkeyPressed);
+    }
+
+    private static List<int> NormalizeHotkey(IEnumerable<int> keyCodes)
+    {
+        return keyCodes
+            .Select(NormalizeKeyCode)
+            .Where(keyCode => keyCode > 0)
+            .Distinct()
+            .OrderBy(GetHotkeySortOrder)
+            .ToList();
+    }
+
+    private static int NormalizeKeyCode(int keyCode)
+    {
+        return keyCode switch
+        {
+            0xA0 or 0xA1 => 0x10,
+            0xA2 or 0xA3 => 0x11,
+            0xA4 or 0xA5 => 0x12,
+            _ => keyCode
+        };
+    }
+
+    private static int GetHotkeySortOrder(int keyCode)
+    {
+        return keyCode switch
+        {
+            0x10 or 0xA0 or 0xA1 => 0,
+            0x11 or 0xA2 or 0xA3 => 1,
+            0x12 or 0xA4 or 0xA5 => 2,
+            _ when TryGetGamepadKeyName(keyCode, out _) => 1000 + keyCode,
+            _ => 100 + keyCode
+        };
     }
 
     private static IEnumerable<XInputState> EnumerateConnectedGamepadStates()
